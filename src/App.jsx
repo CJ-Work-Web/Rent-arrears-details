@@ -1,6 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import XLSX from 'xlsx-js-style';
 
+const normalizeTenant = (name) => {
+  const str = String(name || '').replace(/\s/g, '');
+  const renamed = str.match(/\(改名(.+)\)/);
+  return renamed ? renamed[1] : str;
+};
+
 const parseMgmtFeeData = (data) => {
   const map = new Map();
   let headerIdx = -1;
@@ -28,7 +34,7 @@ const parseMgmtFeeData = (data) => {
     if (!row[0] || isNaN(Number(row[0]))) return;
     if (!String(row[typeCol] || '').includes('房屋管理費')) return;
     const address = String(row[addrCol] || '').replace(/\s/g, '');
-    const tenant = String(row[tenantCol] || '').replace(/\s/g, '');
+    const tenant = normalizeTenant(row[tenantCol]);
     const amount = parseFloat(row[amtCol]);
     if (!address || !tenant || isNaN(amount)) return;
     map.set(tenant + '||' + address, amount);
@@ -191,7 +197,7 @@ const App = () => {
         const mgmtFeeMap = parseMgmtFeeData(fileCData);
         Object.values(cases).forEach(c => {
           c.mgmtFeeSearched = true;
-          const tenant = String(c.name || '').replace(/\s/g, '');
+          const tenant = normalizeTenant(c.name);
           const address = String(c.address || '').replace(/\s/g, '');
           const fee = mgmtFeeMap.get(tenant + '||' + address);
           if (fee !== undefined) c.managementFee = fee;
