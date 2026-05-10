@@ -1,9 +1,46 @@
 import React, { useState, useCallback } from 'react';
 import XLSX from 'xlsx-js-style';
 
+const parseMgmtFeeData = (data) => {
+  const map = new Map();
+  let headerIdx = -1;
+  let addrCol = 3, tenantCol = 4, typeCol = 6, amtCol = 7;
+
+  for (let i = 0; i < Math.min(data.length, 10); i++) {
+    const row = data[i] || [];
+    const rowStr = row.map(c => String(c || '').trim()).join('|');
+    if (rowStr.includes('承租人') && rowStr.includes('地址')) {
+      headerIdx = i;
+      row.forEach((h, idx) => {
+        const s = String(h || '').trim();
+        if (s.includes('地址')) addrCol = idx;
+        if (s === '承租人') tenantCol = idx;
+        if (s.includes('名目')) typeCol = idx;
+        if (s.includes('金額')) amtCol = idx;
+      });
+      break;
+    }
+  }
+
+  if (headerIdx === -1) return map;
+
+  data.slice(headerIdx + 1).forEach(row => {
+    if (!row[0] || isNaN(Number(row[0]))) return;
+    if (!String(row[typeCol] || '').includes('房屋管理費')) return;
+    const address = String(row[addrCol] || '').replace(/\s/g, '');
+    const tenant = String(row[tenantCol] || '').replace(/\s/g, '');
+    const amount = parseFloat(row[amtCol]);
+    if (!address || !tenant || isNaN(amount)) return;
+    map.set(tenant + '||' + address, amount);
+  });
+
+  return map;
+};
+
 const App = () => {
   const [fileAData, setFileAData] = useState(null);
   const [fileBData, setFileBData] = useState(null);
+  const [fileCData, setFileCData] = useState(null);
   const [cutoffDate, setCutoffDate] = useState(new Date().toISOString().split('T')[0]);
   const [processedResults, setProcessedResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -59,6 +96,20 @@ const App = () => {
     reader.readAsBinaryString(file);
   };
 
+  const handleFileC = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const bstr = evt.target.result;
+      const wb = XLSX.read(bstr, { type: 'binary' });
+      const wsname = wb.SheetNames[0];
+      const data = XLSX.utils.sheet_to_json(wb.Sheets[wsname], { header: 1 });
+      setFileCData(data);
+    };
+    reader.readAsBinaryString(file);
+  };
+
   const processData = useCallback(() => {
     if (!fileAData || !fileBData) return;
     setIsProcessing(true);
@@ -101,6 +152,8 @@ const App = () => {
             monthlyRent: row[5] || 0,
             arrears: [],
             penaltyTotal: 0,
+            managementFee: null,
+            mgmtFeeSearched: false,
             startDate: '',
             endDate: ''
           };
@@ -134,6 +187,17 @@ const App = () => {
         }
       });
 
+      if (fileCData) {
+        const mgmtFeeMap = parseMgmtFeeData(fileCData);
+        Object.values(cases).forEach(c => {
+          c.mgmtFeeSearched = true;
+          const tenant = String(c.name || '').replace(/\s/g, '');
+          const address = String(c.address || '').replace(/\s/g, '');
+          const fee = mgmtFeeMap.get(tenant + '||' + address);
+          if (fee !== undefined) c.managementFee = fee;
+        });
+      }
+
       const filteredResults = Object.values(cases).filter(c => c.arrears.length > 0);
       setProcessedResults(filteredResults);
     } catch (err) {
@@ -142,7 +206,7 @@ const App = () => {
     } finally {
       setIsProcessing(false);
     }
-  }, [fileAData, fileBData]);
+  }, [fileAData, fileBData, fileCData]);
 
   const downloadExcel = () => {
     const wb = XLSX.utils.book_new();
@@ -221,7 +285,9 @@ const App = () => {
 
       sheetData.push([
         { v: `未繳管理費(截至${mCutoff})`, s: styleLightOrangeHeader },
-        { v: "-", s: styleWhiteValue }
+        c.managementFee !== null
+          ? { v: Number(c.managementFee), t: 'n', s: styleWhiteCurrency }
+          : { v: "-", s: styleWhiteValue }
       ]);
       sumIndices.push(sheetData.length);
 
@@ -269,7 +335,7 @@ const App = () => {
         </header>
 
         <div className="bg-zinc-900/40 rounded-3xl border border-white/5 p-8 mb-12 shadow-2xl backdrop-blur-sm">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
             <div className={`relative border-2 border-dashed rounded-2xl p-6 transition-all duration-500 ${fileAData ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-zinc-800 hover:border-yellow-600/50'}`}>
               <label className="cursor-pointer block">
                 <span className="text-[10px] font-black text-zinc-600 block mb-3 uppercase tracking-widest">A 表：捷運宅催收統計表</span>
@@ -284,6 +350,17 @@ const App = () => {
                 <div className="text-xl font-bold">{fileBData ? "🟢 已載入罰款明細數據" : "📂 選取罰款未收檔案"}</div>
               </label>
             </div>
+          </div>
+
+          <div className={`relative border-2 border-dashed rounded-2xl p-5 mb-8 transition-all duration-500 ${fileCData ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-zinc-700/40 hover:border-yellow-600/30'}`}>
+            <label className="cursor-pointer block">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">C 表：管理費未收明細</span>
+                <span className="text-[10px] font-black text-zinc-700 border border-zinc-700 rounded px-2 py-0.5 uppercase tracking-wider">選填</span>
+              </div>
+              <input type="file" onChange={handleFileC} className="hidden" accept=".xlsx,.xls" />
+              <div className="text-base font-bold">{fileCData ? "🟢 已載入管理費未收明細（統整時自動比對填入）" : "📂 選取管理費未收明細，自動比對填入「未繳管理費」欄位"}</div>
+            </label>
           </div>
 
           <div className="flex flex-col md:flex-row items-center gap-6">
@@ -363,12 +440,19 @@ const App = () => {
                     <td className="bg-[#84592D] text-yellow-500 py-3 border border-white/10 font-black px-4 text-center">
                       未繳管理費(截至{toMinguoDate(cutoffDate)})
                     </td>
-                    <td className="bg-[#1C1C1C] text-zinc-700 py-3 border border-white/10 italic text-sm font-black uppercase tracking-wider">— 下載報表後手動填入此欄 —</td>
+                    <td className="bg-[#1C1C1C] py-3 border border-white/10 font-black font-mono">
+                      {item.managementFee !== null
+                        ? <span className="text-[#FF5555]">${Number(item.managementFee).toLocaleString()}</span>
+                        : <span className="text-zinc-700 italic text-sm uppercase tracking-wider">
+                            {item.mgmtFeeSearched ? "— 比對無結果 —" : "— 下載報表後手動填入 —"}
+                          </span>
+                      }
+                    </td>
                   </tr>
                   <tr>
                     <td className="bg-[#84592D] text-white py-6 border border-white/10 font-black uppercase tracking-tighter">目前暫列欠款金額</td>
                     <td className="bg-[#1C1C1C] text-[#FF5555] py-6 border border-white/10 font-black font-mono shadow-[inset_0_0_80px_rgba(255,85,85,0.08)]">
-                      ${(item.arrears.reduce((acc, cur) => acc + cur.amount, 0) + item.penaltyTotal).toLocaleString()}
+                      ${(item.arrears.reduce((acc, cur) => acc + cur.amount, 0) + item.penaltyTotal + (item.managementFee || 0)).toLocaleString()}
                     </td>
                   </tr>
                 </tbody>
